@@ -15,10 +15,11 @@ users_db = set()
 referrals_db = {}
 user_balances_uc = {}
 user_balances_uzs = {}
+user_cards_db = {}  # Foydalanuvchilarning ulangan kartalari/rekvizitlarini saqlash uchun
 temp_admin_data = {}
 user_exchange_state = {}
 
-# Minimal depozit / almashtirish chegarasi (50 000 so'm ekvivalenti yoki summasi)
+# Minimal depozit / almashtirish chegarasi (50 000 so'm)
 MIN_DEPOSIT_UZS = 50000
 
 WALLETS = {
@@ -94,7 +95,20 @@ def cmd_start(message):
             except Exception:
                 pass
 
+    is_new = user_id not in users_db
     users_db.add(user_id)
+
+    # Har 50 ta yangi foydalanuvchi yig'ilganda adminni xabardor qilish
+    if is_new and len(users_db) % 50 == 0:
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                f"🎉 **Diqqat! Botda jami {len(users_db)} ta foydalanuvchiga yetildi!**\n"
+                f"🏆 50 talik bosqich konkurs g'olibini tekshirish uchun Admin paneldagi «🏆 Konkurs g'olibi» tugmasini bosing!",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
     if not check_subscription(user_id):
         markup = types.InlineKeyboardMarkup()
@@ -124,6 +138,7 @@ def admin_panel(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("📊 Statistika", callback_data="adm_stats"),
+        types.InlineKeyboardButton("🏆 Konkurs g'olibi", callback_data="adm_contest_winner"),
         types.InlineKeyboardButton("📢 Xabar tarqatish", callback_data="adm_broadcast"),
         types.InlineKeyboardButton("💱 Kurslarni o'zgartirish", callback_data="adm_rates"),
         types.InlineKeyboardButton("🪙 Valyuta qo'shish/o'chirish", callback_data="adm_manage_currencies"),
@@ -131,6 +146,34 @@ def admin_panel(message):
         types.InlineKeyboardButton("📢 Kanal", callback_data="adm_channel")
     )
     bot.send_message(message.chat.id, "🛠 **Admin boshqaruv paneli:**", reply_markup=markup)
+
+# Konkurs g'olibini aniqlash funksiyasi
+@bot.callback_query_handler(func=lambda call: call.data == "adm_contest_winner" and call.from_user.id == ADMIN_ID)
+def admin_contest_winner(call):
+    bot.answer_callback_query(call.id)
+    
+    if not referrals_db:
+        bot.send_message(call.message.chat.id, "⚠️ Hozircha hech kim do'st taklif qilmagan (referallar bazasi bo'sh).")
+        return
+    
+    # Eng ko'p odam taklif qilgan foydalanuvchini topish
+    top_user_id = max(referrals_db, key=referrals_db.get)
+    ref_count = referrals_db[top_user_id]
+    user_card = user_cards_db.get(top_user_id, "Karta ulanmagan ❌")
+    
+    text = (
+        f"🏆 **Joriy Konkurs G'olibi (Top Referal):**\n\n"
+        f"🔗 User ID: `{top_user_id}`\n"
+        f"👥 Taklif qilgan odamlari: **{ref_count} ta**\n"
+        f"💳 Ulangan kartasi/rekviziti: `{user_card}`\n"
+        f"🎁 Yutug'i: **12 000 so'm**\n\n"
+        f"✅ G'olibga 12,000 so'mni o'tkazib berishingiz mumkin!"
+    )
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin"))
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_manage_currencies" and call.from_user.id == ADMIN_ID)
 def manage_currencies_menu(call):
@@ -252,7 +295,7 @@ def save_new_wallet(message, w_code):
 def admin_stats(call):
     total_users = len(users_db)
     bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, f"📊 Jami foydalanuvchilar: {total_users} ta")
+    bot.send_message(call.message.chat.id, f"📊 Jami foydalanuvchilar: {total_users} ta\n🎯 Keyingi konkursga qolgan obunachi: {50 - (total_users % 50)} ta")
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_channel" and call.from_user.id == ADMIN_ID)
 def admin_channel(call):
@@ -368,7 +411,6 @@ def get_exchange_amount(message, give_code, get_code):
     rate = RATES[give_code]["sell"] if RATES[give_code]["sell"] > 0 else 1
     total_uzs = amount * rate
 
-    # --- 50 000 SO'M MINIMAL CHEGARANI TEKSHIRISH ---
     if total_uzs < MIN_DEPOSIT_UZS:
         bot.send_message(
             message.chat.id,
@@ -452,10 +494,35 @@ def show_contact(message):
 
 @bot.message_handler(func=lambda message: message.text == "📁 Hamyonlar")
 def show_wallets(message):
-    text = "📁 **Siz saqlagan rekvizitlar:**\n\n"
-    for code, val in WALLETS.items():
-        text += f"• {code}: `{val}`\n"
-    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    user_id = message.from_user.id
+    saved_card = user_cards_db.get(user_id, "Kiritilmagan ❌")
+    
+    text = (
+        f"📁 **Siz saqlagan rekvizitlar va karta:**\n\n"
+        f"💳 Konkurs va baland yechish uchun karta: `{saved_card}`\n\n"
+        f"*Kartangizni o'zgartirish uchun pastdagi tugmani bosing:*"
+    )
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💳 Kartani kiritish/o'zgartirish", callback_data="set_my_card"))
+    markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
+    
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == "set_my_card")
+def set_my_card_step(call):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
+    msg = bot.edit_message_text(
+        "💳 Karta raqamingizni va bank nomini kiriting (Masalan: `9860... Humo`):",
+        call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, save_user_card_process)
+
+def save_user_card_process(message):
+    user_id = message.from_user.id
+    card_info = message.text.strip()
+    user_cards_db[user_id] = card_info
+    bot.send_message(message.chat.id, f"✅ Kartangiz muvaffaqiyatli saqlandi!\n`{card_info}`", reply_markup=main_menu(user_id), parse_mode="Markdown")
 
 # --- REFERALLAR VA KONKURS ---
 @bot.message_handler(func=lambda message: message.text == "👥 Referallar va Konkurs")
@@ -466,20 +533,23 @@ def show_referrals(message):
     ref_count = referrals_db.get(user_id, 0)
     bal_uc = user_balances_uc.get(user_id, 0)
     bal_uzs = user_balances_uzs.get(user_id, 0)
+    saved_card = user_cards_db.get(user_id, "Kiritilmagan ❌")
 
     text = (
-        f"👥 **Referral tizimi va Haftalik Konkurs**\n\n"
+        f"👥 **Referral tizimi va 50talik Konkurs**\n\n"
         f"🔗 **Sizning taklif havolangiz:**\n`{ref_link}`\n\n"
         f"📊 **Taklif qilgan do'stlaringiz:** {ref_count} ta\n"
+        f"💳 **Sizning kartangiz:** `{saved_card}`\n"
         f"🎁 **Sizning balansingiz:**\n"
         f"• 🦋 UC Balans: **{bal_uc} UC**\n"
         f"• 💵 Pul Balans: **{bal_uzs:,} so'm**\n\n"
         f"📌 *Shartlar:* Har bir taklif qilingan do'st uchun **+5 UC** va **+200 so'm** beriladi!\n"
-        f"🏆 **Haftalik Konkurs:** Eng ko'p do'st taklif qilgan 1-o'rin egasiga har hafta **60 UC** yoki pul mukofoti beriladi!\n"
-        f"⚠️ *Balansni yechish uchun minimal summa: 50,000 so'm.*"
+        f"🏆 **Konkurs sharti:** Botga har **50 ta obunachi** yig'ilganda, eng ko'p odam chaqirgan 1-o'rin egasiga **12,000 so'm** mukofot beriladi!\n"
+        f"⚠️ *Mukofot berilishi uchun kartangiz ulangan bo'lishi shart.*"
     )
     
     markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💳 Kartani ulash/o'zgartirish", callback_data="set_my_card"))
     markup.add(types.InlineKeyboardButton("💸 Balansni yechish", callback_data="withdraw_balance"))
     markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
     
@@ -494,37 +564,24 @@ def withdraw_balance_process(call):
         bot.answer_callback_query(call.id, f"❌ Balansingiz yetarli emas! Minimal yechish summasi: 50,000 so'm.", show_alert=True)
         return
     
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
-    
-    bot.edit_message_text(
-        f"💸 **Balansni yechish uchun ariza**\n\nSizning pul balansingiz: **{bal_uzs:,} so'm**\n\nKartangiz raqamini va F.I.Sh yuboring:",
-        call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(call.message, process_withdraw_request)
-
-def process_withdraw_request(message):
-    user = message.from_user
-    card_info = message.text
-    bal_uzs = user_balances_uzs.get(user.id, 0)
-    
-    if bal_uzs < 50000:
-        bot.send_message(message.chat.id, "❌ Balansingiz 50,000 so'mdan kam!")
+    saved_card = user_cards_db.get(user_id)
+    if not saved_card:
+        bot.answer_callback_query(call.id, f"❌ Avval kartangizni ulang!", show_alert=True)
         return
 
     admin_text = (
         f"🚨 **Yangi Balans Yechish Arizasi!**\n\n"
-        f"👤 Foydalanuvchi: {user.full_name} (@{user.username or 'yoq'})\n"
-        f"🔗 User ID: `{user.id}`\n"
+        f"👤 Foydalanuvchi: {call.from_user.full_name} (@{call.from_user.username or 'yoq'})\n"
+        f"🔗 User ID: `{user_id}`\n"
         f"💵 Summa: **{bal_uzs:,} so'm**\n"
-        f"💳 Karta/Ma'lumot: `{card_info}`"
+        f"💳 Saqlangan karta: `{saved_card}`"
     )
     
-    user_balances_uzs[user.id] = 0
-    user_balances_uc[user.id] = 0
+    user_balances_uzs[user_id] = 0
+    user_balances_uc[user_id] = 0
 
     bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
-    bot.send_message(message.chat.id, "✅ Ariza adminga yuborildi!", reply_markup=main_menu(user.id))
+    bot.answer_callback_query(call.id, "✅ Arizangiz adminga yuborildi!", show_alert=True)
 
 # --- PUBG UC ---
 @bot.message_handler(func=lambda message: message.text == "🎮 PUBG UC Sotib Olish")
@@ -546,7 +603,7 @@ def get_pubg_id(message):
         markup.add(types.InlineKeyboardButton(f"{uc} UC - {price:,} UZS", callback_data=f"ucsel_{pubg_id}_{uc}"))
     markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
 
-    bot.send_message(message.chat.id, "Kerakli UC paketini tanlang\n(Minimal paket 60 UC - 12,000 UZS yoki boshqa istalgan):", reply_markup=markup)
+    bot.send_message(message.chat.id, "Kerakli UC paketini tanlang:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("ucsel_"))
 def select_uc_package(call):
@@ -575,7 +632,7 @@ def uc_pay_confirmed(call):
     markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
 
     bot.edit_message_text("Iltimos, to'lov cheki rasmini yuboring:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-    bot.register_next_step_handler(message=call.message, callback=lambda msg: process_uc_receipt(msg, pubg_id, uc_amount, total_uzs)) # type: ignore
+    bot.register_next_step_handler(call.message, lambda msg: process_uc_receipt(msg, pubg_id, uc_amount, total_uzs))
 
 def process_uc_receipt(message, pubg_id, uc_amount, total_uzs):
     if not message.photo:
@@ -620,6 +677,7 @@ def back_handler(call):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
             types.InlineKeyboardButton("📊 Statistika", callback_data="adm_stats"),
+            types.InlineKeyboardButton("🏆 Konkurs g'olibi", callback_data="adm_contest_winner"),
             types.InlineKeyboardButton("📢 Xabar tarqatish", callback_data="adm_broadcast"),
             types.InlineKeyboardButton("💱 Kurslarni o'zgartirish", callback_data="adm_rates"),
             types.InlineKeyboardButton("🪙 Valyuta qo'shish/o'chirish", callback_data="adm_manage_currencies"),
@@ -659,10 +717,6 @@ def handle_admin_receipt(message):
             bot.send_message(data["target_user_id"], f"Tabriklaymiz! Kartangizga {data['total_uzs']:,.2f} UZS o'tkazib berildi!")
             bot.send_photo(TRANSACTION_CHANNEL, admin_photo_id, caption=f"Muvaffaqiyatli tranzaksiya (#ID{data['order_id']})\nXizmat: Almashtirish\nSumma: {data['total_uzs']:,.2f} UZS\nStatus: Bajarildi")
             bot.send_message(ADMIN_ID, "✅ Tasdiqlandi va kanalga yuborildi!")
-
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_ex")
-def cancel_exchange(call):
-    bot.edit_message_text("Amal bekor qilindi.", call.message.chat.id, call.message.message_id)
 
 if __name__ == "__main__":
     print("Bot ishga tushdi...")
